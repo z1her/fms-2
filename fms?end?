@@ -1,0 +1,326 @@
+
+load("data.N_Mar2020")
+
+#library
+installed.packages("tidyverse")
+installed.packages("ggplot2")
+installed.packages("zoo")
+library(zoo)
+#midprice and D
+
+tq = tq[tq$"Bid Price" > 0 & tq$"Ask Price" > 0 | is.na(tq$"Ask Price")| is.na(tq$"Bid Price"),]
+tq$midprice = (tq$`Bid Price` + tq$`Ask Price`) / 2
+tq$midprice = na.locf(tq$midprice,na.rm=FALSE,fromLast = FALSE) 
+
+tq$D = sign(tq$Price - tq$midprice)
+
+
+#check
+#neki= as.matrix(tq)
+#colSums(neki[, 17, drop=FALSE]<=0 & is.na(neki[, 17, drop=FALSE])==FALSE)
+#print((neki[, 17, drop=FALSE]<=0) )
+
+
+
+#time strip and filtering
+
+tq$Date <- as.Date(tq$`Date-Time`);
+tq$`Date-Time` <- tq$`Date-Time`+tq$`GMT Offset`*60*60
+#  tq[, `Date-Time` := `Date-Time`+ `GMT Offset`*60*60,by=.(Date,Stock) ]
+
+tq$Time <- format(as.POSIXct(tq$`Date-Time`),format="%H:%M:%OS")
+time = strptime(tq$`Exch Time`, format="%H:%M:%OS")
+tq$Seconds = time$hour*3600 + time$min*60 + time$sec + tq$`GMT Offset`*3600
+#check
+
+#max(tq$`Date-Time`)
+#min(tq$`Date-Time`)
+
+
+
+tq = tq[tq$Seconds > (9* 3600 + 35 * 60) & tq$Seconds < (15 * 3600 + 55 * 60),]
+tt = tq[tq$Type == 'Trade' & tq$D!=0,]
+
+library(ggplot2)
+
+ggplot(data=subset(tq, !is.na(`Bid Price`)),aes(`Date-Time`, `Bid Price`)) + geom_line()
+ggplot(data=subset(tq, !is.na(`Ask Price`)),aes(`Date-Time`, `Ask Price`)) + geom_line()
+ggplot(data=subset(tq, !is.na(`midprice`)),aes(`Date-Time`, `midprice`)) + geom_line()
+
+
+
+min(tq$midprice)
+max(tq$midprice)
+
+
+
+###Filtering out negatives and outside trading hours
+
+###Trading volume
+tq$Trading.volume = (tq$Price * tq$Volume);
+
+sum(tq$Trading.volume, na.rm = TRUE);
+
+##Qutoed spread
+10000 * mean((tq$`Ask Price` - tq$`Bid Price`) / tq$midprice, na.rm = TRUE);
+##Effective spread
+10000 * mean(tt$D * (tt$Price - tt$midprice) / tt$midprice, na.rm = TRUE)
+library(dplyr)
+sec_diff <- diff(tq$Seconds)
+sec_diff <- c(sec_diff,0)
+tq$sec_diff <- abs(sec_diff)
+tq$sec_diff[tq$sec_diff>20000]<-0
+
+max(tq$sec_diff )
+#12:57 to 13:11
+dates = unique(as.Date(tq$`Date-Time`))
+library(glmnet)
+library(dplyr)
+efficiency_1 = matrix(nrow=length(dates),ncol = 5,dimnames=
+                        list(as.character(dates), c("total_volume_in_mil","quoted spread", "effective spread","quoted spread weighted","effective spread weighted")))
+for(d in 1:length(dates)){
+ 
+  efficiency_1[d,"total_volume_in_mil"]= sum((tq$Trading.volume) [which(tq$`Date`==dates[d])],na.rm=TRUE)/1000000
+  
+  efficiency_1[d,"quoted spread"]=10000*mean(((tq$`Ask Price`-tq$`Bid Price`)/tq$`midprice`)[which(tq$`Date`==dates[d])],na.rm = TRUE)
+
+  efficiency_1[d,"effective spread"]=2*10000*mean((tt$D*(tt$Price-tt$`midprice`)/tt$`midprice`)[dates[d]==tt$Date], na.rm = TRUE)
+  efficiency_1[d,"quoted spread weighted"] =  10000*weighted.mean(((tq$`Ask Price`-tq$`Bid Price`)/tq$midprice)[dates[d]==tq$Date],tq$sec_diff[dates[d]==tq$Date],na.rm = TRUE)
+  print(max(tt$Volume[tt$Date==dates[d]]))
+  efficiency_1[d,"effective spread weighted"] =2*10000*weighted.mean((tt$D*(tt$Price-tt$midprice)/tt$midprice)[tt$Date==dates[d]], tt$Volume[dates[d]==tt$Date], na.rm =TRUE)
+}
+eff =as.data.frame(efficiency_1)
+row.names(eff) <- eff$dates
+#check
+eff =as.data.frame(efficiency_1)
+sum(eff$total_volume_in_mil)
+
+ggplot(eff,aes(row.names(eff), `effective spread`, group =3)) + geom_line()+ theme(axis.text.x = element_text(face="bold", color="#993333", 
+                                                                                                              size=6, angle=45))
+ggplot(eff,aes(row.names(eff), `quoted spread`, group =3)) + geom_line()+ theme(axis.text.x = element_text(face="bold", color="#993333",  size=6, angle=45))
+                                                                                                              
+
+
+
+##Advanced data
+qq = tq[tq$Type == "Quote" , c("Date", "Seconds", "midprice")];
+breakpoints5min = seq(9+35/60, 15+55/60, 5/60)*3600;
+qq$interval5min = seq(9+35/60, 15+55/60, 5/60)[findInterval(qq$Seconds, breakpoints5min)];
+require(zoo);
+head(dates)
+efficiency = matrix(nrow = length(dates), ncol = 15, dimnames = list(as.character(dates), c("var5min", "ac5min", "rv5min", "var1min", "ac1min", "rv1min", "vr_5min_1min", "var10sec", "ac10sec", "rv10sec","vr_1min_10sec","var1sec", "ac1sec", "rv1sec","vr_10sec_1sec")));
+print(efficiency);
+qq$lastobs5min = c(diff(qq$interval5min)>0,T);
+for (d in 1:length(dates)){
+  equispaced5min = qq[qq$lastobs5min & qq$Date== dates[d],c("interval5min","midprice")];
+  equispaced5min = merge(matrix(breakpoints5min/3600,length(breakpoints5min),1), equispaced5min, by=1)
+  
+  equispaced5min$midprice = na.locf(equispaced5min$midprice);
+  equispaced5min$Ret = 100 * c(NA, diff(log(equispaced5min$midprice)));
+  efficiency[d, "var5min"] = var(equispaced5min$Ret, na.rm = TRUE)
+  efficiency[d, "ac5min"] = cor(equispaced5min$Ret[-length(equispaced5min$Ret)], equispaced5min$Ret[-1], use = "complete.obs")
+  efficiency[d, "rv5min"] = mean(equispaced5min$Ret^2, na.rm = TRUE)*100
+}
+
+
+breakpoints1min = seq(9+35/60, 15+55/60, 1/60)*3600;
+qq$interval1min = seq(9+35/60, 15+55/60, 1/60)[findInterval(qq$Seconds, breakpoints1min)];
+qq$lastobs1min = c(diff(qq$interval1min)>0,T);
+for (d in 1:length(dates)){
+  equispaced1min = qq[qq$lastobs1min & qq$Date== dates[d],c("interval1min","midprice")];
+  equispaced1min = merge(matrix(breakpoints1min/3600,length(breakpoints1min),1), equispaced1min, by=1)
+  
+  equispaced1min$midprice = na.locf(equispaced1min$midprice);
+  equispaced1min$Ret = 100 * c(NA, diff(log(equispaced1min$midprice)));
+  efficiency[d, "var1min"] = var(equispaced1min$Ret, na.rm = TRUE)
+  efficiency[d, "ac1min"] = cor(equispaced1min$Ret[-length(equispaced1min$Ret)], equispaced1min$Ret[-1], use = "complete.obs")
+  efficiency[d, "rv1min"] = mean(equispaced1min$Ret^2, na.rm = TRUE)*100
+}
+eff_var_cr =as.data.frame(efficiency)
+row.names(eff_var_cr)
+library(ggplot2)
+ggplot(eff_var_cr,aes(row.names(eff_var_cr), `var1min`, group =1)) + geom_line()+ theme(axis.text.x = element_text(face="bold", color="#993333", 
+                                                                                                              size=6, angle=45))
+ggplot(eff_var_cr,aes(row.names(eff_var_cr), `ac1min`, group =3)) + geom_line()+ theme(axis.text.x = element_text(face="bold", color="#993333",  size=6, angle=45))
+
+ggplot(eff_var_cr,aes(row.names(eff_var_cr), `rv1min`, group =3)) + geom_line()+ theme(axis.text.x = element_text(face="bold", color="#993333",  size=6, angle=45))
+
+#check
+
+
+
+breakpoints10sec = seq(9+35/60, 15+55/60, 1/360)*3600;
+qq$interval10sec = seq(9+35/60, 15+25/60, 1/360)[findInterval(qq$Seconds, breakpoints10sec)];
+head(qq);
+qq$lastobs10sec = c(diff(qq$interval10sec)>0,T);
+for (d in 1:length(dates)){
+  equispaced10sec = qq[qq$lastobs10sec & qq$Date== dates[d],c("interval10sec","midprice")];
+  print(qq[qq$lastobs10sec & qq$Date== dates[d],c("interval10sec","midprice")])
+  equispaced10sec = merge(matrix(breakpoints10sec/3600,length(breakpoints10sec),1), equispaced10sec, by=1)
+  
+  equispaced10sec$midprice = na.locf(equispaced10sec$midprice);
+  equispaced10sec$Ret = 100 * c(NA, diff(log(equispaced10sec$midprice)));
+  efficiency[d, "var10sec"] = var(equispaced10sec$Ret, na.rm = TRUE)
+  efficiency[d, "ac10sec"] = cor(equispaced10sec$Ret[-length(equispaced10sec$Ret)], equispaced10sec$Ret[-1], use = "complete.obs")
+  efficiency[d, "rv10sec"] = mean(equispaced10sec$Ret^2, na.rm = TRUE)*100
+}
+
+print(efficiency)
+efficiency[,"vr_5min_1min"] = efficiency[,"var5min"] / (efficiency[,"var1min"]*5);
+efficiency[,"vr_1min_10sec"] = efficiency[,"var1min"] / (efficiency[,"var10sec"]*6);
+round(efficiency,3)
+
+breakpoints1sec = seq(9+35/60, 15+55/60, 1/3600)*3600;
+qq$interval1sec = seq(9+35/60, 15+25/60, 1/3600)[findInterval(qq$Seconds, breakpoints1sec)];
+head(qq);
+qq$lastobs1sec = c(diff(qq$interval1sec)>0,T);
+for (d in 1:length(dates)){
+  equispaced1sec = qq[qq$lastobs1sec & qq$Date== dates[d],c("interval1sec","midprice")];
+  print(qq[qq$lastobs1sec & qq$Date== dates[d],c("interval1sec","midprice")])
+  equispaced1sec = merge(matrix(breakpoints1sec/3600,length(breakpoints1sec),1), equispaced1sec, by=1)
+  
+  equispaced1sec$midprice = na.locf(equispaced1sec$midprice);
+  equispaced1sec$Ret = 100 * c(NA, diff(log(equispaced1sec$midprice)));
+  efficiency[d, "var1sec"] = var(equispaced1sec$Ret, na.rm = TRUE)
+  efficiency[d, "ac1sec"] = cor(equispaced1sec$Ret[-length(equispaced1sec$Ret)], equispaced1sec$Ret[-1], use = "complete.obs")
+  efficiency[d, "rv1sec"] = mean(equispaced1sec$Ret^2, na.rm = TRUE)*100
+}
+efficiency[,"vr_10sec_1sec"] = efficiency[,"var10sec"] / (efficiency[,"var1sec"]*10);
+round(efficiency,3)
+
+
+#subset
+tq_1 = subset(tq,Date== "2020-03-18" & tq$`Seconds` > (12* 3600 + 27 * 60) & tq$`Seconds` < (12 * 3600 + 57 * 60) )
+tq_2 = subset(tq,Date== "2020-03-18" & tq$`Seconds` > (13* 3600 + 11 * 60) & tq$`Seconds` < (13 * 3600 + 41 * 60) )
+
+
+
+
+ggplot(data=subset(tq_1, !is.na(`midprice`) &!is.na(`Bid Price`),!is.na(`Ask Price`)),aes(`Date-Time`, `midprice`)) + geom_line()
+ggplot(data=subset(tq_2, !is.na(`midprice`)),aes(`Date-Time`, `midprice`)) + geom_line()
+g.gspc = ggplot(data = tq_1) + geom_line(aes(x = `Date-Time`, y = `Bid Price`)) + geom_line(aes(x = `Date-Time`, y = `Ask Price`))  + geom_line(aes(x = `Date-Time`, y = `Price`,color="red" )) + theme_bw()
+
+plot(g.gspc)
+
+mean(tq_1$midprice)
+
+tt_1 = tq_1[tq_1$Type == 'Trade' & tq_1$D!=0,]
+tt_2 = tq_2[tq_2$Type == 'Trade' & tq_2$D!=0,]
+
+
+
+
+efficiency_2 = matrix(nrow=1,ncol = 5,dimnames=
+                        list("Date", c("total_volume_in_mil","quoted spread","effective spread","quoted spread weighted","effective spread weighted")))
+for(d in 1){
+  efficiency_2[d,"total_volume_in_mil"]= sum(tq_1$Volume*tq_1$Price,na.rm=TRUE)/1000000
+  print(tq_1$Volume*tq_1$Price)
+  efficiency_2[d,"quoted spread"]=10000*mean((tq_1$`Ask Price`-tq_1$`Bid Price`)/tq_1$`midprice`,na.rm = TRUE)
+
+  efficiency_2[d,"effective spread"]=2*10000*mean(tt_1$D*(tt_1$Price-tt_1$`midprice`)/tt_1$`midprice`, na.rm = TRUE)
+  
+  efficiency_2[d,"quoted spread weighted"] =10000*weighted.mean((tq_1$`Ask Price`-tq_1$`Bid Price`)/tq_1$midprice,tq_1$sec_diff, na.rm = TRUE)
+  efficiency_2[d,"effective spread weighted"] =2*10000*weighted.mean(tt_1$D*(tt_1$Price-tt_1$midprice)/tt_1$midprice, tt_1$Volume, na.rm =TRUE)
+}
+#print(tq$Price[tq$D==0]>=0)
+efficiency_3 = matrix(nrow=1,ncol = 5,dimnames=
+                        list("Date", c("total_volume_in_mil","quoted spread","effective spread","quoted spread weighted","effective spread weighted")))
+for(d in 1){
+  efficiency_3[d,"total_volume_in_mil"]= sum(tq_2$Volume*tq_2$Price,na.rm=TRUE)/1000000
+  
+  efficiency_3[d,"quoted spread"]=10000*mean((tq_2$`Ask Price`-tq_2$`Bid Price`)/tq_2$`midprice`,na.rm = TRUE)
+  
+  efficiency_3[d,"effective spread"]=2*10000*mean(tt_2$D*(tt_2$Price-tt_2$`midprice`)/tt_2$`midprice`, na.rm = TRUE)
+
+  efficiency_3[d,"quoted spread weighted"] =10000*weighted.mean((tq_2$`Ask Price`-tq_2$`Bid Price`)/tq_2$midprice,tq_2$sec_diff, na.rm = TRUE)
+  efficiency_3[d,"effective spread weighted"] =2*10000*weighted.mean(tt_2$D*(tt_2$Price-tt_2$midprice)/tt_2$midprice, tt_2$Volume, na.rm =TRUE)
+}
+
+
+
+
+#efficiency matrix tq_1 and tq_2
+qq_new = tq_1[tq_1$Type == "Quote" , c("Date", "Seconds", "midprice")];
+require(zoo);
+efficiency_new_1 = matrix(nrow = (1), ncol = 7, dimnames = list(c("tq_1"), c( "var1min", "ac1min", "rv1min", "var10sec", "ac10sec", "rv10sec","vr_1min_10sec")));
+
+breakpoints1min_1 = seq(12+27/60, 12+56/60, 1/60)*3600;
+qq_new$interval1min_1 <- NA
+
+qq_new$interval1min_1 = seq(12+27/60, 12+56/60, 1/60)[findInterval(qq_new$Seconds, breakpoints1min_1)];
+qq_new$lastobs1min_1 = c(diff(qq_new$interval1min_1)>0,T);
+for (d in 1){
+  equispaced1min_1 = qq_new[qq_new$lastobs1min_1 ,c("interval1min_1","midprice")];
+  equispaced1min_1 = merge(matrix(breakpoints1min_1/3600,length(breakpoints1min_1),1), equispaced1min_1, by=1)
+  
+  equispaced1min_1$midprice = na.locf(equispaced1min_1$midprice);
+  equispaced1min_1$Ret = 100 * c(NA, diff(log(equispaced1min_1$midprice)));
+  efficiency_new_1[d, "var1min"] = var(equispaced1min_1$Ret, na.rm = TRUE)
+  efficiency_new_1[d, "ac1min"] = cor(equispaced1min_1$Ret[-length(equispaced1min_1$Ret)], equispaced1min_1$Ret[-1], use = "complete.obs")
+  efficiency_new_1[d, "rv1min"] = mean(equispaced1min_1$Ret^2, na.rm = TRUE)
+}
+
+breakpoints10sec_1 = seq(12+27/60, 12+56/60, 1/360)*3600;
+qq_new$interval10sec_1 = seq(12+27/60, 12+56/60, 1/360)[findInterval(qq_new$Seconds, breakpoints10sec_1)];
+
+qq_new$lastobs10sec_1 = c(diff(qq_new$interval10sec_1)>0,T);
+for (d in 1){
+  equispaced10sec_1 = qq_new[qq_new$lastobs10sec_1 ,c("interval10sec_1","midprice")];
+  equispaced10sec_1 = merge(matrix(breakpoints10sec_1/3600,length(breakpoints10sec_1),1), equispaced10sec_1, by=1)
+  
+  equispaced10sec_1$midprice = na.locf(equispaced10sec_1$midprice);
+  equispaced10sec_1$Ret = 100 * c(NA, diff(log(equispaced10sec_1$midprice)));
+  efficiency_new_1[d, "var10sec"] = var(equispaced10sec_1$Ret, na.rm = TRUE)
+  efficiency_new_1[d, "ac10sec"] = cor(equispaced10sec_1$Ret[-length(equispaced10sec_1$Ret)], equispaced10sec_1$Ret[-1], use = "complete.obs")
+  efficiency_new_1[d, "rv10sec"] = mean(equispaced10sec_1$Ret^2, na.rm = TRUE)
+}
+
+
+efficiency_new_1[,"vr_1min_10sec"] = efficiency_new_1[,"var1min"] / (efficiency_new_1[,"var10sec"]*6);
+round(efficiency_new_1,3)
+
+qq_new_1 = tq_2[tq_2$Type == "Quote" , c("Date", "Seconds", "midprice")];
+require(zoo);
+efficiency_new_2 = matrix(nrow = (1), ncol = 7, dimnames = list(c("tq_2"), c( "var1min", "ac1min", "rv1min", "var10sec", "ac10sec", "rv10sec","vr_1min_10sec")));
+
+breakpoints1min_2 = seq(13+11/60, 13+41/60, 1/60)*3600;
+qq_new_1$interval1min_2 <- NA
+
+qq_new_1$interval1min_2 = seq(13+11/60, 13+41/60, 1/60)[findInterval(qq_new_1$Seconds, breakpoints1min_2)];
+qq_new_1$lastobs1min_2 = c(diff(qq_new_1$interval1min_2)>0,T);
+for (d in 1){
+  equispaced1min_2 = qq_new_1[qq_new_1$lastobs1min_2 ,c("interval1min_2","midprice")];
+  equispaced1min_2 = merge(matrix(breakpoints1min_2/3600,length(breakpoints1min_2),1), equispaced1min_2, by=1)
+  
+  equispaced1min_2$midprice = na.locf(equispaced1min_2$midprice);
+  equispaced1min_2$Ret = 100 * c(NA, diff(log(equispaced1min_2$midprice)));
+  efficiency_new_2[d, "var1min"] = var(equispaced1min_2$Ret, na.rm = TRUE)
+  efficiency_new_2[d, "ac1min"] = cor(equispaced1min_2$Ret[-length(equispaced1min_2$Ret)], equispaced1min_2$Ret[-1], use = "complete.obs")
+  efficiency_new_2[d, "rv1min"] = mean(equispaced1min_2$Ret^2, na.rm = TRUE)
+}
+
+breakpoints10sec_2 = seq(13+11/60, 13+41/60, 1/360)*3600;
+qq_new_1$interval10sec_2 = seq(13+11/60, 13+41/60, 1/360)[findInterval(qq_new_1$Seconds, breakpoints10sec_2)];
+
+qq_new_1$lastobs10sec_2 = c(diff(qq_new_1$interval10sec_2)>0,T);
+for (d in 1){
+  equispaced10sec_2 = qq_new_1[qq_new_1$lastobs10sec_2 ,c("interval10sec_2","midprice")];
+  equispaced10sec_2 = merge(matrix(breakpoints10sec_2/3600,length(breakpoints10sec_2),1), equispaced10sec_2, by=1)
+  
+  equispaced10sec_2$midprice = na.locf(equispaced10sec_2$midprice);
+  equispaced10sec_2$Ret = 100 * c(NA, diff(log(equispaced10sec_2$midprice)));
+  efficiency_new_2[d, "var10sec"] = var(equispaced10sec_2$Ret, na.rm = TRUE)
+  efficiency_new_2[d, "ac10sec"] = cor(equispaced10sec_2$Ret[-length(equispaced10sec_2$Ret)], equispaced10sec_2$Ret[-1], use = "complete.obs")
+  efficiency_new_2[d, "rv10sec"] = mean(equispaced10sec_2$Ret^2, na.rm = TRUE)
+}
+
+
+efficiency_new_2[,"vr_1min_10sec"] = efficiency_new_2[,"var1min"] / (efficiency_new_2[,"var10sec"]*6);
+round(efficiency_new_2,3)
+
+
+library("gridExtra")
+pdf("data_gridExtra.pdf")       # Export PDF
+grid.table(efficiency_1)
+dev.off()
+getwd()
